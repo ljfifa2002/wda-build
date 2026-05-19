@@ -13,25 +13,51 @@
           with:
             xcode-version: "16.4"
 
-        - name: Build WDA unsigned (iOS real device)
-          run: sh Scripts/ci/build-real.sh
-          env:
-            DERIVED_DATA_PATH: wda_build
-            SCHEME: WebDriverAgentRunner
-            DESTINATION: generic/platform=iOS
-            WD: wda_build/Build/Products/Debug-iphoneos
-            ZIP_PKG_NAME: WebDriverAgentRunner-Runner.zip
-
-        - name: Package as IPA
+        - name: Build WDA for real device (unsigned)
           run: |
-            unzip WebDriverAgentRunner-Runner.zip -d app_dir
+            xcodebuild clean build-for-testing \
+              -project WebDriverAgent.xcodeproj \
+              -scheme WebDriverAgentRunner \
+              -destination "generic/platform=iOS" \
+              -derivedDataPath wda_build \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              ARCHS=arm64 \
+              IPHONEOS_DEPLOYMENT_TARGET=15.0
+
+        - name: Locate artifacts
+          run: |
+            echo "=== xctestrun files ==="
+            find wda_build -name "*.xctestrun" | head -5
+            echo "=== Runner app ==="
+            find wda_build -name "WebDriverAgentRunner-Runner.app" -maxdepth 6 | head -3
+            echo "=== Products dir ==="
+            ls wda_build/Build/Products/
+
+        - name: Package artifacts
+          run: |
+            PRODUCTS_DIR="wda_build/Build/Products"
+            XCTESTRUN=$(find "$PRODUCTS_DIR" -name "*.xctestrun" | head -1)
+            APP_DIR=$(find "$PRODUCTS_DIR" -name "WebDriverAgentRunner-Runner.app" -maxdepth 4 | head -1)
+
+            echo "xctestrun: $XCTESTRUN"
+            echo "app: $APP_DIR"
+
+            mkdir -p wda_output
+            cp "$XCTESTRUN" wda_output/
+            cp -r "$APP_DIR" wda_output/
+
+            echo "=== wda_output contents ==="
+            ls -lh wda_output/
+
+            # Also package as IPA for backup
             mkdir -p Payload
-            cp -r app_dir/WebDriverAgentRunner-Runner.app Payload/
-            zip -r WebDriverAgent-unsigned.ipa Payload/
-            ls -lh WebDriverAgent-unsigned.ipa
+            cp -r "$APP_DIR" Payload/
+            zip -r wda_output/WebDriverAgent-unsigned.ipa Payload/
 
         - uses: actions/upload-artifact@v4
           with:
-            name: WebDriverAgent-unsigned
-            path: WebDriverAgent-unsigned.ipa
+            name: wda-artifacts
+            path: wda_output/
             retention-days: 30
