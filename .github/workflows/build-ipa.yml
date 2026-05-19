@@ -1,0 +1,37 @@
+name: Build WDA IPA (unsigned)
+
+  on:
+    workflow_dispatch:
+
+  jobs:
+    build:
+      runs-on: macos-15
+      steps:
+        - uses: actions/checkout@v4
+
+        - uses: maxim-lobanov/setup-xcode@v1
+          with:
+            xcode-version: "16.4"
+
+        - name: Build WDA unsigned (iOS real device)
+          run: sh Scripts/ci/build-real.sh
+          env:
+            DERIVED_DATA_PATH: wda_build
+            SCHEME: WebDriverAgentRunner
+            DESTINATION: generic/platform=iOS
+            WD: wda_build/Build/Products/Debug-iphoneos
+            ZIP_PKG_NAME: WebDriverAgentRunner-Runner.zip
+
+        - name: Package as IPA
+          run: |
+            unzip WebDriverAgentRunner-Runner.zip -d app_dir
+            mkdir -p Payload
+            cp -r app_dir/WebDriverAgentRunner-Runner.app Payload/
+            zip -r WebDriverAgent-unsigned.ipa Payload/
+            ls -lh WebDriverAgent-unsigned.ipa
+
+        - uses: actions/upload-artifact@v4
+          with:
+            name: WebDriverAgent-unsigned
+            path: WebDriverAgent-unsigned.ipa
+            retention-days: 30
