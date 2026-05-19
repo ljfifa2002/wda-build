@@ -1,4 +1,4 @@
-name: Build WDA IPA (unsigned)
+  name: Build WDA IPA (unsigned)
 
   on:
     workflow_dispatch:
