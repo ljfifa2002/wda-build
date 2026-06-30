@@ -1,0 +1,61 @@
+name: Build HideAutomation Tweak
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'HideAutomation.x'
+      - 'HideAutomation.plist'
+      - '.github/workflows/build-hide-automation.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Theos
+        run: |
+          export THEOS=~/theos
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          curl -fsSL https://github.com/theos/sdks/archive/refs/heads/master.zip -o /tmp/sdks.zip
+          unzip -q /tmp/sdks.zip -d /tmp/sdks-extracted
+          mv /tmp/sdks-extracted/sdks-master/*.sdk $THEOS/sdks/
+          brew install ldid 2>/dev/null || true
+
+      - name: Write Makefile
+        run: |
+          cat > Makefile.hideauto << 'EOF'
+          ARCHS = arm64 arm64e
+          TARGET = iphone:clang:latest:15.0
+          include $(THEOS)/makefiles/common.mk
+          TWEAK_NAME = HideAutomation
+          HideAutomation_FILES = HideAutomation.x
+          HideAutomation_FRAMEWORKS = UIKit
+          HideAutomation_CFLAGS = -fobjc-arc
+          HideAutomation_LDFLAGS = -lsubstrate
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          EOF
+
+      - name: Build dylib
+        run: make -f Makefile.hideauto FINALPACKAGE=1 DEBUG=0
+
+      - name: Locate and package
+        id: pkg
+        run: |
+          DYLIB=$(find .theos/obj -name "HideAutomation.dylib" | head -1)
+          echo "dylib=$DYLIB" >> $GITHUB_OUTPUT
+          ls -lh "$DYLIB"
+          zip -X -j HideAutomation.zip "$DYLIB" HideAutomation.plist
+          ls -lh HideAutomation.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HideAutomation-${{ github.run_number }}
+          path: HideAutomation.zip
