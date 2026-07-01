@@ -1,16 +1,39 @@
-// HideAutomation.x — suppress the "Automation Running" overlay.
-// v5: directly hook SBRecordingIndicatorWindow (the actual iOS 15 banner window).
+// HideAutomation.x — v6: dump SpringBoard class names to find the real banner class.
 
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 
 %ctor {
-    NSLog(@"[HideAutomation] v5 loaded into SpringBoard");
+    NSLog(@"[HideAutomation] v6 loaded into SpringBoard");
     [@"1" writeToFile:@"/tmp/hideauto_loaded" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    // Clear diagnostic log so we only see entries from this SpringBoard session.
-    [@"" writeToFile:@"/tmp/hideauto_windows.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    // Dump all SpringBoard class names related to XCTest / Automation / Banner / Recording.
+    // After SpringBoard starts, check: cat /tmp/hideauto_classes.txt
+    unsigned int count = 0;
+    const char **classes = objc_copyClassNamesForImage(
+        "/System/Library/CoreServices/SpringBoard.app/SpringBoard", &count);
+    NSMutableArray *relevant = [NSMutableArray array];
+    for (unsigned int i = 0; i < count; i++) {
+        NSString *name = @(classes[i]);
+        if ([name containsString:@"XCTest"]     ||
+            [name containsString:@"Automation"] ||
+            [name containsString:@"Banner"]     ||
+            [name containsString:@"Recording"]) {
+            [relevant addObject:name];
+        }
+    }
+    free(classes);
+    [relevant sortUsingSelector:@selector(compare:)];
+    NSString *out = [relevant componentsJoinedByString:@"\n"];
+    [out writeToFile:@"/tmp/hideauto_classes.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSLog(@"[HideAutomation] dumped %lu classes to /tmp/hideauto_classes.txt", (unsigned long)relevant.count);
+
+    // Also hook UILabel setText: to find where "Automation" text is set.
+    // Result logged to /tmp/hideauto_labels.log after banner appears.
+    [@"" writeToFile:@"/tmp/hideauto_labels.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
-// Belt-and-suspenders for older iOS versions.
+// Keep existing suppressions.
 %hook SBXCTestBannerController
 - (void)setVisible:(BOOL)v      { }
 - (void)showBanner              { }
@@ -23,30 +46,32 @@
 - (void)_updateXCTestBanner            { }
 %end
 
-// iOS 15: "Automation Running" is shown inside SBRecordingIndicatorWindow.
-// Hook this class directly — a %hook UIWindow cannot catch an overridden
-// setHidden: defined in the subclass.
 %hook SBRecordingIndicatorWindow
 - (void)setHidden:(BOOL)hidden {
-    if (!hidden) {
-        NSLog(@"[HideAutomation] suppressed SBRecordingIndicatorWindow setHidden:NO");
-        // Record suppression for diagnostics.
-        NSString *entry = @"SUPPRESSED SBRecordingIndicatorWindow\n";
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/hideauto_windows.log"];
+    if (!hidden) { return; } // suppress
+    %orig;
+}
+- (void)makeKeyAndVisible { } // suppress
+%end
+
+// Find where "Automation" text is set — log the label's view hierarchy path.
+%hook UILabel
+- (void)setText:(NSString *)text {
+    if (text && [text rangeOfString:@"Automation" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        NSString *entry = [NSString stringWithFormat:@"setText:%@ cls=%@ supercls=%@\n",
+            text,
+            NSStringFromClass(self.class),
+            NSStringFromClass(self.superview.class)];
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/hideauto_labels.log"];
         if (!fh) {
-            [entry writeToFile:@"/tmp/hideauto_windows.log" atomically:NO encoding:NSUTF8StringEncoding error:nil];
+            [entry writeToFile:@"/tmp/hideauto_labels.log" atomically:NO encoding:NSUTF8StringEncoding error:nil];
         } else {
             [fh seekToEndOfFile];
             [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
             [fh closeFile];
         }
-        return; // keep hidden
+        NSLog(@"[HideAutomation] Automation label: %@", entry);
     }
     %orig;
-}
-- (void)makeKeyAndVisible {
-    // Also suppress makeKeyAndVisible path.
-    NSLog(@"[HideAutomation] suppressed SBRecordingIndicatorWindow makeKeyAndVisible");
-    // Do NOT call %orig — window stays hidden.
 }
 %end
