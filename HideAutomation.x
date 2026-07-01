@@ -1,34 +1,53 @@
 // HideAutomation.x — suppress the "Automation Running" overlay that iOS shows
 // when WebDriverAgent / XCTest is active. Injects into SpringBoard only.
-// Hooks multiple candidate classes so it works across iOS 14-16 without changes.
 
 #import <UIKit/UIKit.h>
 
+// Confirm injection: write /tmp/hideauto_loaded on every SpringBoard launch.
+// Check with: ls /tmp/hideauto_loaded (exists = dylib injected successfully)
+%ctor {
+    NSLog(@"[HideAutomation] loaded into SpringBoard");
+    [@"1" writeToFile:@"/tmp/hideauto_loaded" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 // iOS 14-15: SBXCTestBannerController manages the automation status bar banner.
 %hook SBXCTestBannerController
-- (void)setVisible:(BOOL)visible { /* no-op — keep banner hidden */ }
+- (void)setVisible:(BOOL)visible { /* no-op */ }
 - (void)showBanner { /* no-op */ }
 - (void)_showBanner { /* no-op */ }
+- (void)_updateBannerVisibility { /* no-op */ }
 %end
 
 // iOS 15-16: SBXCTestAssistant drives automation state in SpringBoard.
-// Suppressing the "runner did start" callback prevents the banner from appearing.
 %hook SBXCTestAssistant
 - (void)testRunnerPIDDidChange:(int)pid { /* no-op */ }
 - (void)_updateXCTestBanner { /* no-op */ }
+- (void)setRunnerPID:(int)pid { /* no-op */ }
 %end
 
-// Fallback: intercept any UIWindow whose windowLevel matches the overlay level
-// (~1001 used by SpringBoard alert windows) that has "automation" in its description.
+// Broader UIWindow fallback: block any window SpringBoard creates for automation.
+// Use a wider window-level range and check the full window description, not just rootVC.
 %hook UIWindow
 - (void)setHidden:(BOOL)hidden {
-    // Only intercept windows that SpringBoard pushes for automation status.
-    // A windowLevel of 1001 is the SpringBoard alert tier; skip all others.
-    if (!hidden && self.windowLevel >= 1000 && self.windowLevel < 1100) {
-        NSString *desc = [self.rootViewController.class description];
-        if (desc && ([desc rangeOfString:@"XCTest" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                     [desc rangeOfString:@"Automation" options:NSCaseInsensitiveSearch].location != NSNotFound)) {
-            return; // suppress
+    if (!hidden && self.windowLevel >= 990 && self.windowLevel <= 1200) {
+        NSString *desc = [NSString stringWithFormat:@"%@%@",
+            NSStringFromClass(self.class),
+            NSStringFromClass(self.rootViewController.class) ?: @""];
+        if ([desc rangeOfString:@"XCTest" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [desc rangeOfString:@"Automation" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [desc rangeOfString:@"Banner" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            NSLog(@"[HideAutomation] suppressed window: %@", desc);
+            return;
+        }
+    }
+    %orig;
+}
+- (void)setAlpha:(CGFloat)alpha {
+    if (alpha > 0 && self.windowLevel >= 990 && self.windowLevel <= 1200) {
+        NSString *desc = NSStringFromClass(self.rootViewController.class) ?: @"";
+        if ([desc rangeOfString:@"XCTest" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [desc rangeOfString:@"Automation" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return;
         }
     }
     %orig;
