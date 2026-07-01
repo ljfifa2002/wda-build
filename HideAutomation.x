@@ -1,60 +1,38 @@
-// HideAutomation.x — v6: dump SpringBoard class names to find the real banner class.
+// HideAutomation.x — suppress the "Automation Running" overlay.
+// v7: inject into WebDriverAgentRunner-Runner (not SpringBoard).
+// The banner is rendered in the WDA XCTest runner process, not SpringBoard.
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
 %ctor {
-    NSLog(@"[HideAutomation] v6 loaded into SpringBoard");
+    NSLog(@"[HideAutomation] v7 loaded into WDA runner");
     [@"1" writeToFile:@"/tmp/hideauto_loaded" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [@"" writeToFile:@"/tmp/hideauto_labels.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
-    // Dump all SpringBoard class names related to XCTest / Automation / Banner / Recording.
-    // After SpringBoard starts, check: cat /tmp/hideauto_classes.txt
+    // Dump all class names containing Banner/Automation/Overlay/Status for discovery.
     unsigned int count = 0;
-    const char **classes = objc_copyClassNamesForImage(
-        "/System/Library/CoreServices/SpringBoard.app/SpringBoard", &count);
+    Class *all = objc_copyClassList(&count);
     NSMutableArray *relevant = [NSMutableArray array];
     for (unsigned int i = 0; i < count; i++) {
-        NSString *name = @(classes[i]);
-        if ([name containsString:@"XCTest"]     ||
+        NSString *name = NSStringFromClass(all[i]);
+        if ([name containsString:@"Banner"]     ||
             [name containsString:@"Automation"] ||
-            [name containsString:@"Banner"]     ||
-            [name containsString:@"Recording"]) {
+            [name containsString:@"Overlay"]    ||
+            [name containsString:@"Status"]     ||
+            [name containsString:@"XCTest"]     ||
+            [name containsString:@"Running"]) {
             [relevant addObject:name];
         }
     }
-    free(classes);
+    free(all);
     [relevant sortUsingSelector:@selector(compare:)];
     NSString *out = [relevant componentsJoinedByString:@"\n"];
     [out writeToFile:@"/tmp/hideauto_classes.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    NSLog(@"[HideAutomation] dumped %lu classes to /tmp/hideauto_classes.txt", (unsigned long)relevant.count);
-
-    // Also hook UILabel setText: to find where "Automation" text is set.
-    // Result logged to /tmp/hideauto_labels.log after banner appears.
-    [@"" writeToFile:@"/tmp/hideauto_labels.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSLog(@"[HideAutomation] dumped %lu classes", (unsigned long)relevant.count);
 }
 
-// Keep existing suppressions.
-%hook SBXCTestBannerController
-- (void)setVisible:(BOOL)v      { }
-- (void)showBanner              { }
-- (void)_showBanner             { }
-- (void)_updateBannerVisibility { }
-%end
-
-%hook SBXCTestAssistant
-- (void)testRunnerPIDDidChange:(int)pid { }
-- (void)_updateXCTestBanner            { }
-%end
-
-%hook SBRecordingIndicatorWindow
-- (void)setHidden:(BOOL)hidden {
-    if (!hidden) { return; } // suppress
-    %orig;
-}
-- (void)makeKeyAndVisible { } // suppress
-%end
-
-// Find where "Automation" text is set — log the label's view hierarchy path.
+// Catch any UILabel in the runner that shows "Automation" text.
 %hook UILabel
 - (void)setText:(NSString *)text {
     if (text && [text rangeOfString:@"Automation" options:NSCaseInsensitiveSearch].location != NSNotFound) {
@@ -70,7 +48,22 @@
             [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
             [fh closeFile];
         }
-        NSLog(@"[HideAutomation] Automation label: %@", entry);
+        NSLog(@"[HideAutomation] banner label: %@", entry);
+    }
+    %orig;
+}
+%end
+
+// Suppress any UIWindow with "Automation" or "Banner" in class name.
+%hook UIWindow
+- (void)setHidden:(BOOL)hidden {
+    if (!hidden) {
+        NSString *cls = NSStringFromClass(self.class);
+        if ([cls containsString:@"Automation"] || [cls containsString:@"Banner"] ||
+            [cls containsString:@"XCTest"]) {
+            NSLog(@"[HideAutomation] suppressed window: %@", cls);
+            return;
+        }
     }
     %orig;
 }
